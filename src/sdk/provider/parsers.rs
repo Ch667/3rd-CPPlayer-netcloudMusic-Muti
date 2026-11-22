@@ -245,6 +245,8 @@ pub fn parse_catalog_artist(ar: &Value) -> CatalogArtist {
     let avatar_url = ar["picUrl"]
         .as_str()
         .or_else(|| ar["img1v1Url"].as_str())
+        .or_else(|| ar["avatar"].as_str())
+        .or_else(|| ar["cover"].as_str())
         .map(String::from);
 
     let description = ar["briefDesc"]
