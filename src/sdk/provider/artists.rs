@@ -49,7 +49,11 @@ pub async fn get_artist(client: &ApiClient, req: IdRequest) -> Result<CatalogArt
     })?;
 
     if res.body["data"]["artist"].is_object() {
-        Ok(parse_catalog_artist(&res.body["data"]["artist"]))
+        let mut artist = parse_catalog_artist(&res.body["data"]["artist"]);
+        if artist.avatarUrl.is_none() {
+            artist.avatarUrl = res.body["data"]["user"]["avatarUrl"].as_str().map(String::from);
+        }
+        Ok(artist)
     } else if res.body["artist"].is_object() {
         Ok(parse_catalog_artist(&res.body["artist"]))
     } else {
@@ -57,6 +61,30 @@ pub async fn get_artist(client: &ApiClient, req: IdRequest) -> Result<CatalogArt
             category: "NotFound".to_string(),
             message: format!("Artist {} not found", req.id),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_catalog_artist_reads_head_info_avatar_and_cover() {
+        let head = json!({
+            "id": 43755,
+            "name": "Skrillex",
+            "avatar": "https://p1.music.126.net/a.jpg",
+            "cover": "https://p1.music.126.net/c.jpg"
+        });
+        assert_eq!(parse_catalog_artist(&head).avatarUrl.as_deref(), Some("https://p1.music.126.net/a.jpg"));
+
+        let cover_only = json!({
+            "id": 1,
+            "name": "Test",
+            "cover": "https://p1.music.126.net/c.jpg"
+        });
+        assert_eq!(parse_catalog_artist(&cover_only).avatarUrl.as_deref(), Some("https://p1.music.126.net/c.jpg"));
     }
 }
 
@@ -70,14 +98,41 @@ pub async fn get_artist_tracks(
     q.params
         .insert("offset".to_string(), req.offset.to_string());
 
-    let res = client.artist_songs(&q).await.map_err(|e| Failure {
-        category: "Network".to_string(),
-        message: e.to_string(),
-    })?;
+    let res = client.artist_songs(&q).await;
+    let body = match res {
+        Ok(r) if r.body["songs"].as_array().map(|a| !a.is_empty()).unwrap_or(false) => Some(r),
+        other => {
+            if req.offset == 0 {
+                match client.artist_top_song(&q).await {
+                    Ok(top) if top.body["songs"].as_array().map(|a| !a.is_empty()).unwrap_or(false) => Some(top),
+                    _ => match other {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            return Err(Failure {
+                                category: "Network".to_string(),
+                                message: e.to_string(),
+                            })
+                        }
+                    },
+                }
+            } else {
+                match other {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        return Err(Failure {
+                            category: "Network".to_string(),
+                            message: e.to_string(),
+                        })
+                    }
+                }
+            }
+        }
+    }
+    .unwrap();
 
-    let songs = res.body["songs"].as_array();
-    let total = res.body["total"].as_i64();
-    let more = res.body["more"].as_bool();
+    let songs = body.body["songs"].as_array();
+    let total = body.body["total"].as_i64();
+    let more = body.body["more"].as_bool();
 
     let items = match songs {
         Some(arr) => arr.iter().map(parse_track).collect(),
